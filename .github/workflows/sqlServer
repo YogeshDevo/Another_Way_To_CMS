@@ -1,7 +1,7 @@
 name: CMS
 on:
   push:
-    branches:
+   branches:
       - main
 jobs:
   deploy:
