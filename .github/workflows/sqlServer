@@ -1,0 +1,119 @@
+name: CMS
+on:
+  push:
+    branches:
+      - main
+jobs:
+  deploy:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+   - name: Install Chocolatey
+      run: |
+        Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+      shell: powershell
+          
+   - name: Install PM2
+     run: npm install pm2 -g
+
+    - name: Download and Extract Production Files
+        run: |
+          echo DATABASE_URL='sqlserver://localhost:1433;database=gil_cms2;username=sa;password=yogesh@123;integratedSecurity=false;encrypt=true;trustServerCertificate=true;' 
+          curl -L -o gil_cms_prod.zip "https://drive.google.com/uc?export=download&id=14pitMRkVMLIxxSlTF-49AFg6haqGamCa"
+
+    - name: Set up Environment Variables
+      run: |
+          echo DATABASE_URL='sqlserver://localhost:1433;database=gil_cms2;username=sa;password=yogesh@123;integratedSecurity=false;encrypt=true;trustServerCertificate=true;'  >> $env:GITHUB_ENV 
+          echo AUTH_TYPE=ldap >> $GITHUB_ENV
+          echo PORT=80 >> $GITHUB_ENV
+          echo SQLSERVER_HOST=localhost >> $GITHUB_ENV
+          echo SQLSERVER_USER=cmsadmin2 >> $GITHUB_ENV
+          echo SQLSERVER_PASSWORD=cmsadmin2 >> $GITHUB_ENV
+          echo SQLSERVER_DB_NAME=gil_cms2 >> $GITHUB_ENV
+          echo SQLSERVER_DB_BACKUP_PATH=C:/sqlserver_Backup >> $GITHUB_ENV
+          echo JWT_SECRET=Arizon123 >> $GITHUB_ENV
+          echo SUPER_ADMIN_USERNAME=super-admin >> $GITHUB_ENV
+          echo SUPER_ADMIN_PASSWORD=Arizon@123 >> $GITHUB_ENV
+          echo PRISMA_OPTIMIZE=N >> $GITHUB_ENV
+          echo PRISMA_LOGGING=Y >> $GITHUB_ENV
+          echo NODE_ENV=production >> $GITHUB_ENV
+          echo SEED=Y >> $GITHUB_ENV
+          echo SEED_BLOCK=Y >> $GITHUB_ENV
+
+    - name: Install SQL Server Express
+      run: |
+        echo "Installing SQL Server Express with Chocolatey..."
+        choco install sql-server-express --no-progress
+      shell: powershell
+
+    - name: Set environment variables for SQL Server
+      run: |
+        echo "Setting environment variables for sqlcmd..."
+        echo "SQLCMDSERVER=localhost\\SQLEXPRESS" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf-8 -Append
+        echo "Setting environment variable DATABASE_URL to SQL connection string..."
+        echo "DATABASE_URL=Server=localhost\\SQLEXPRESS;Database=nservicebus;Integrated Security=True;" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf-8 -Append
+      shell: powershell
+
+    - name: Wait for SQL Server to be ready
+      run: |
+        for ($i = 1; $i -le 30; $i++) {
+          echo "Attempt $i/30 to connect to SQL Server..."
+          try {
+            sqlcmd -S localhost\SQLEXPRESS -Q "SELECT 1"
+            Write-Host "SQL Server is ready"
+            exit 0
+          } catch {
+            Write-Host "Not ready, sleeping for 5s"
+            Start-Sleep -Seconds 5
+          }
+        }
+        Write-Error "SQL Server did not become ready in time"
+      shell: powershell
+
+    - name: Create initial catalog
+      run: |
+        sqlcmd -S localhost\SQLEXPRESS -Q "IF DB_ID('nservicebus') IS NULL CREATE DATABASE [nservicebus]"
+      shell: powershell
+
+    - name: Setup Node.js environment
+      uses: actions/setup-node@v2
+      with:
+        node-version: '16'
+
+    - name: Install npm dependencies
+      run: |
+        npm install
+        npm install prisma @prisma/client
+      shell: powershell
+
+    - name: Push Prisma schema to database
+      run: |
+        npx prisma db push
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      shell: powershell
+
+ - name: Seed Database
+        run: |
+          set SEED=Y
+          set SEED_BLOCK=Y
+          node src/index.js
+          set SEED=N
+          set SEED_BLOCK=N
+
+
+ - name: Update Environment Variables Post-Seed
+   run: |
+     echo SEED=N >> .env
+     echo SEED_BLOCK=N >> .env
+
+ - name: Start Backend with PM2
+   run: |
+     pm2 start src/index.js -i 5
+
+ - name: Start Proxy Server with PM2
+   run: |
+     pm2 start server.js -i 5
